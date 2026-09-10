@@ -11,8 +11,6 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        // libxposed-api 只在 JitPack 上有
-        maven("https://jitpack.io")
     }
 }
 
