@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">StatusBarCleaner</string>
+    <string name="xposed_description">截图时自动给状态栏位置加黑色遮罩(仅自用)</string>
+
+    <string name="title">截图隐藏状态栏</string>
+    <string name="subtitle">模块激活后,每次截图会自动隐藏顶部状态栏</string>
+
+    <string name="enable">启用截图清理</string>
+    <string name="enabled">已启用 - 下次截图生效</string>
+    <string name="disabled">未启用</string>
+
+    <string name="status_active">模块状态: 正常运行</string>
+    <string name="status_inactive">模块状态: 未激活,请在 LSPosed 中启用并勾选 com.android.systemui</string>
+
+    <string name="how_to_use">使用方法</string>
+    <string name="how_to_use_desc">1. 在 LSPosed 中启用本模块\n2. 勾选作用域 "com.android.systemui"\n3. 重启系统 UI 后生效</string>
+</resources>
