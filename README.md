@@ -4,9 +4,31 @@
 
 ## 功能
 
-- 每次截图后,自动在状态栏位置画一条黑色遮罩
-- 状态栏位置 = 屏幕顶部 28dp 高度
-- 支持 PNG / JPG 格式
+- 每次截图时,自动把状态栏设为**完全透明**
+- app 内容(本就延伸到状态栏后面)自然透过来
+- 背景颜色**不变**,只隐藏状态栏内容(时钟、电池、信号图标等)
+
+## 效果对比
+
+**普通截图**:
+```
+┌──────────────────────────┐
+│ 12:34  📶 90%      🔋   │  ← 状态栏
+│                          │
+│    app 内容              │
+│                          │
+└──────────────────────────┘
+```
+
+**使用本模块后**:
+```
+┌──────────────────────────┐
+│                          │  ← 空白(app 内容透过来)
+│                          │
+│    app 内容              │
+│                          │
+└──────────────────────────┘
+```
 
 ## 使用方法
 
@@ -14,19 +36,19 @@
 2. 在 **LSPosed** 中启用本模块
 3. 作用域勾选 **`com.android.systemui`**
 4. 重启系统 UI
-5. 截图测试,状态栏位置应是黑色
+5. 截图测试
+
+## 实现原理
+
+- Hook `com.android.systemui.screenshot.ScreenshotController.takeScreenshot`
+- 截图前:遍历 SystemUI 的 view,把所有"状态栏相关"的 view 的 `alpha` 设为 0
+- 截图后:恢复 `alpha` 为原始值
 
 ## 技术细节
 
-- LSPosed API: 102 (io.github.libxposed.api)
+- LSPosed API: 102 (`io.github.libxposed.api`)
 - 最小 SDK: 31 (Android 12)
 - 编译 SDK: 34 (Android 14)
-- 仅在 `com.android.systemui.screenshot.ScreenshotController.saveScreenshot` 之后触发
-
-## 局限
-
-- 状态栏高度固定 28dp(实际设备可能略有差异)
-- 仅处理系统截图,某些 App 内置截图功能不生效
 
 ## 自用声明
 

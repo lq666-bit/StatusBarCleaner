@@ -1,121 +1,163 @@
 /*
  * StatusBarCleaner - LSPosed 入口 (libxposed-api 102)
- * Hook ScreenshotController.saveScreenshot,截图保存后自动给状态栏区域加黑色遮罩
+ * 截图时把状态栏设为完全透明,app 内容显示出来
+ *
+ * 实现原理:
+ * - Hook com.android.systemui.screenshot.ScreenshotController.takeScreenshot
+ * - 截图前:把 SystemUI 的状态栏相关 view 的 alpha 设为 0 (完全透明)
+ * - 截图后:延迟恢复 alpha 为 1
+ *
+ * 因为状态栏背景默认是透明的(只是叠加在 app 上面),app 内容本身就延伸到
+ * 状态栏位置后面,所以状态栏 alpha=0 时 app 内容自然透过来,实现"无状态栏"效果
  */
 package com.lq666.statusbarcleaner
 
-import android.content.res.Resources
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.Canvas
-import android.graphics.Color
-import android.graphics.Paint
+import android.app.ActivityThread
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.view.View
+import android.view.WindowManagerGlobal
 import io.github.libxposed.api.XposedModule
 import io.github.libxposed.api.XposedModuleInterface
-import java.io.File
-import java.io.FileOutputStream
+import java.lang.reflect.Field
 
 class XposedEntry : XposedModule() {
 
     companion object {
         private const val TAG = "StatusBarCleaner"
-        private const val SCREENSHOT_DIR = "/sdcard/Pictures/Screenshots/"
-        private const val STATUS_BAR_HEIGHT_DP = 28
     }
+
+    // 记录被改动的 View 和原始 alpha, 用于恢复
+    private val hiddenViews = mutableMapOf<View, Float>()
 
     override fun onPackageReady(param: XposedModuleInterface.PackageReadyParam) {
         if (param.packageName != "com.android.systemui") return
 
         try {
-            val clazz = param.classLoader.loadClass(
+            val controllerClass = param.classLoader.loadClass(
                 "com.android.systemui.screenshot.ScreenshotController"
             )
 
-            // 找到所有名为 saveScreenshot 的方法
-            val methods = clazz.declaredMethods.filter { it.name == "saveScreenshot" }
+            // 找到所有 takeScreenshot 相关方法
+            val screenshotMethods = controllerClass.declaredMethods.filter {
+                it.name.startsWith("takeScreenshot")
+            }
 
-            if (methods.isEmpty()) {
-                Log.w(TAG, "未找到 saveScreenshot 方法")
+            if (screenshotMethods.isEmpty()) {
+                Log.w(TAG, "未找到 takeScreenshot 方法")
                 return
             }
 
-            methods.forEach { method ->
+            screenshotMethods.forEach { method ->
                 hook(method).intercept { chain ->
+                    Log.d(TAG, "截图触发: ${method.name}")
+                    // 1. 隐藏状态栏
+                    hideStatusBarViews()
+                    // 2. 执行原方法(触发截图)
                     val result = chain.proceed()
-                    // 1.5 秒后处理截图(确保文件已写入)
+                    // 3. 延迟恢复 (1 秒后,确保截图捕获完成)
                     Handler(Looper.getMainLooper()).postDelayed({
-                        try {
-                            processLatestScreenshot()
-                        } catch (e: Throwable) {
-                            Log.e(TAG, "处理截图失败: ${e.message}", e)
-                        }
-                    }, 1500)
+                        restoreStatusBarViews()
+                    }, 1000)
                     result
                 }
             }
-            Log.i(TAG, "已 hook ${methods.size} 个 saveScreenshot 方法")
+
+            Log.i(TAG, "已 hook ${screenshotMethods.size} 个 takeScreenshot 方法")
         } catch (e: Throwable) {
             Log.e(TAG, "hook 失败: ${e.message}", e)
         }
     }
 
     /**
-     * 处理最新一张截图:在状态栏位置画黑色矩形覆盖
+     * 把所有状态栏相关 view 设为完全透明 (alpha = 0)
+     * 同时隐藏 children (时钟、电池、信号图标)
      */
-    private fun processLatestScreenshot() {
-        val dir = File(SCREENSHOT_DIR)
-        if (!dir.exists() || !dir.isDirectory) {
-            Log.w(TAG, "截图目录不存在: $SCREENSHOT_DIR")
-            return
-        }
-
-        // 找出最近修改的截图
-        val latest = dir.listFiles()
-            ?.filter { it.isFile && (it.name.endsWith(".png") || it.name.endsWith(".jpg") || it.name.endsWith(".jpeg")) }
-            ?.maxByOrNull { it.lastModified() }
-            ?: run {
-                Log.w(TAG, "未找到截图文件")
-                return
+    private fun hideStatusBarViews() {
+        synchronized(hiddenViews) {
+            hiddenViews.clear()
+            try {
+                val views = findSystemUIViews()
+                for (view in views) {
+                    if (isStatusBarView(view)) {
+                        // 记录原始 alpha 和 visibility, 之后恢复
+                        if (view.alpha != 0f) {
+                            hiddenViews[view] = view.alpha
+                            view.alpha = 0f
+                        }
+                    }
+                }
+                Log.d(TAG, "已隐藏 ${hiddenViews.size} 个状态栏 view")
+            } catch (e: Throwable) {
+                Log.e(TAG, "隐藏状态栏失败: ${e.message}", e)
             }
-
-        // 检查是否是 10 秒内创建的（避免处理旧图)
-        val age = System.currentTimeMillis() - latest.lastModified()
-        if (age > 10000) {
-            Log.d(TAG, "跳过太旧的截图: ${latest.name} (${age}ms ago)")
-            return
         }
+    }
 
-        Log.i(TAG, "处理截图: ${latest.name}")
-
-        // 读取原图
-        val bitmap = BitmapFactory.decodeFile(latest.absolutePath) ?: return
-
-        // 计算状态栏像素高度
-        val density = Resources.getSystem().displayMetrics.density
-        val statusBarHeightPx = (STATUS_BAR_HEIGHT_DP * density).toInt()
-
-        // 在顶部画黑色矩形
-        val canvas = Canvas(bitmap)
-        val paint = Paint().apply {
-            color = Color.BLACK
-            style = Paint.Style.FILL
+    /**
+     * 恢复状态栏 view 的 alpha 和 visibility
+     */
+    private fun restoreStatusBarViews() {
+        synchronized(hiddenViews) {
+            try {
+                hiddenViews.forEach { (view, originalAlpha) ->
+                    try {
+                        view.alpha = originalAlpha
+                    } catch (e: Throwable) {
+                        // view 可能已被销毁,忽略
+                    }
+                }
+                Log.d(TAG, "已恢复 ${hiddenViews.size} 个状态栏 view")
+                hiddenViews.clear()
+            } catch (e: Throwable) {
+                Log.e(TAG, "恢复状态栏失败: ${e.message}", e)
+            }
         }
-        canvas.drawRect(
-            0f, 0f,
-            bitmap.width.toFloat(), statusBarHeightPx.toFloat(),
-            paint
-        )
+    }
 
-        // 保存覆盖
-        val format = if (latest.name.endsWith(".png")) Bitmap.CompressFormat.PNG else Bitmap.CompressFormat.JPEG
-        FileOutputStream(latest).use { out ->
-            bitmap.compress(format, 100, out)
+    /**
+     * 通过 WindowManagerGlobal 获取所有系统 window 的 view
+     */
+    private fun findSystemUIViews(): List<View> {
+        return try {
+            val wmGlobal = WindowManagerGlobal.getInstance()
+            // 通过反射调用 getViews() (隐藏 API)
+            val viewsField: Field = WindowManagerGlobal::class.java.getDeclaredField("mViews").apply {
+                isAccessible = true
+            }
+            @Suppress("UNCHECKED_CAST")
+            val views = viewsField.get(wmGlobal) as? ArrayList<View> ?: return emptyList()
+            views.toList()
+        } catch (e: Throwable) {
+            Log.w(TAG, "无法通过 WindowManagerGlobal 获取 view: ${e.message}")
+            // 退而求其次:尝试 ActivityThread 当前 activity
+            findSystemUIViewsFallback()
         }
+    }
 
-        bitmap.recycle()
-        Log.i(TAG, "已处理截图: ${latest.name}")
+    private fun findSystemUIViewsFallback(): List<View> {
+        return try {
+            val thread = ActivityThread.currentActivityThread()
+            val activities = thread::class.java.getDeclaredMethod("getActivities").apply {
+                isAccessible = true
+            }.invoke(thread) as? List<*> ?: return emptyList()
+            activities.mapNotNull { (it as? android.app.Activity)?.window?.decorView }
+        } catch (e: Throwable) {
+            Log.w(TAG, "fallback 也失败: ${e.message}")
+            emptyList()
+        }
+    }
+
+    /**
+     * 判断 view 是否是状态栏相关
+     * 启发式判断:view 的类名包含 "StatusBar" 或 "NotificationIconContainer" 等
+     */
+    private fun isStatusBarView(view: View): Boolean {
+        val name = view.javaClass.name
+        return name.contains("StatusBar") ||
+            name.contains("NotificationIcon") ||
+            name.contains("BatteryMeter") ||
+            name == "com.android.systemui.statusbar.policy.Clock"
     }
 }
